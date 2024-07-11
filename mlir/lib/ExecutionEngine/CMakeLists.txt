@@ -62,6 +62,7 @@ add_mlir_library(MLIRExecutionEngine
 
   EXCLUDE_FROM_LIBMLIR
 
+  SHARED
   ADDITIONAL_HEADER_DIRS
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/ExecutionEngine
 
