@@ -609,8 +609,8 @@ endfunction(add_mlir_aggregate)
 # where non-standard library builds can be installed.
 function(add_mlir_library_install name)
   if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
-  get_target_export_arg(${name} MLIR export_to_mlirtargets UMBRELLA mlir-libraries)
-  install(TARGETS ${name}
+    get_target_export_arg(${name} MLIR export_to_mlirtargets UMBRELLA mlir-libraries)
+    install(TARGETS ${name}
     COMPONENT ${name}
     ${export_to_mlirtargets}
     LIBRARY DESTINATION lib${LLVM_LIBDIR_SUFFIX}
@@ -622,12 +622,12 @@ function(add_mlir_library_install name)
     OBJECTS DESTINATION lib${LLVM_LIBDIR_SUFFIX}
   )
 
-  if (NOT LLVM_ENABLE_IDE)
-    add_llvm_install_targets(install-${name}
+    if (NOT LLVM_ENABLE_IDE)
+      add_llvm_install_targets(install-${name}
                             DEPENDS ${name}
                             COMPONENT ${name})
-  endif()
-  set_property(GLOBAL APPEND PROPERTY MLIR_ALL_LIBS ${name})
+    endif()
+    set_property(GLOBAL APPEND PROPERTY MLIR_ALL_LIBS ${name})
   endif()
   set_property(GLOBAL APPEND PROPERTY MLIR_EXPORTS ${name})
 endfunction()

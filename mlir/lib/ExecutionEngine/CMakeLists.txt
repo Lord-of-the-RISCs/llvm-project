@@ -60,8 +60,6 @@ endif(LLVM_USE_PERF)
 add_mlir_library(MLIRExecutionEngine
   ExecutionEngine.cpp
 
-  EXCLUDE_FROM_LIBMLIR
-
   ADDITIONAL_HEADER_DIRS
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/ExecutionEngine
 
@@ -302,7 +300,7 @@ if(LLVM_ENABLE_PIC)
     if (NOT DEFINED ROCM_TEST_CHIPSET)
       find_program(ROCM_AGENT_ENUMERATOR rocm_agent_enumerator "${ROCM_PATH}/bin" /usr/bin /usr/local/bin)
       if(ROCM_AGENT_ENUMERATOR)
-          execute_process(COMMAND "${ROCM_AGENT_ENUMERATOR}"
+        execute_process(COMMAND "${ROCM_AGENT_ENUMERATOR}"
           OUTPUT_VARIABLE AGENTS_STRING
           ERROR_VARIABLE AGENTS_STRING
           RESULT_VARIABLE AGENT_ENUMERATOR_RESULT)
