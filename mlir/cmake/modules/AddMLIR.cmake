@@ -639,7 +639,6 @@ function(add_mlir_public_c_api_library name)
   add_mlir_library(${name}
     ${ARGN}
     OBJECT
-    EXCLUDE_FROM_LIBMLIR
     ENABLE_AGGREGATION
     ADDITIONAL_HEADER_DIRS
     ${MLIR_MAIN_INCLUDE_DIR}/mlir-c
