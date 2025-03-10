@@ -78,7 +78,7 @@ module m
     class(t), allocatable :: f07
   end function
   pure function f08() ! C1585
-    !ERROR: Result of pure function may not have polymorphic ALLOCATABLE ultimate component '%a'
+    !ERROR: Result of pure function may not have polymorphic ALLOCATABLE potential component '%a'
     type(polyAlloc) :: f08
   end function
 
@@ -200,8 +200,9 @@ module m
     !ERROR: An image control statement may not appear in a pure subprogram
     sync all ! C1599
   end subroutine
-  pure subroutine s14
-    integer :: img, nimgs, i[*], tmp
+  pure subroutine s14(i)
+    integer :: img, nimgs, tmp
+    integer, intent(in out) :: i[*]
                                    ! implicit sync all
     img = this_image()
     nimgs = num_images()

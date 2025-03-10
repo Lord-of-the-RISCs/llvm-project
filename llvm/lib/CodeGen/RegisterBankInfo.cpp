@@ -100,15 +100,12 @@ RegisterBankInfo::getRegBank(Register Reg, const MachineRegisterInfo &MRI,
 }
 
 const TargetRegisterClass *
-RegisterBankInfo::getMinimalPhysRegClass(Register Reg,
+RegisterBankInfo::getMinimalPhysRegClass(MCRegister Reg,
                                          const TargetRegisterInfo &TRI) const {
-  assert(Reg.isPhysical() && "Reg must be a physreg");
-  const auto &RegRCIt = PhysRegMinimalRCs.find(Reg);
-  if (RegRCIt != PhysRegMinimalRCs.end())
-    return RegRCIt->second;
-  const TargetRegisterClass *PhysRC = TRI.getMinimalPhysRegClassLLT(Reg, LLT());
-  PhysRegMinimalRCs[Reg] = PhysRC;
-  return PhysRC;
+  const auto [RegRCIt, Inserted] = PhysRegMinimalRCs.try_emplace(Reg);
+  if (Inserted)
+    RegRCIt->second = TRI.getMinimalPhysRegClassLLT(Reg, LLT());
+  return RegRCIt->second;
 }
 
 const RegisterBank *RegisterBankInfo::getRegBankFromConstraints(
@@ -215,8 +212,9 @@ RegisterBankInfo::getInstrMappingImpl(const MachineInstr &MI) const {
       }
     }
 
-    unsigned Size = getSizeInBits(Reg, MRI, TRI);
-    const ValueMapping *ValMapping = &getValueMapping(0, Size, *CurRegBank);
+    TypeSize Size = getSizeInBits(Reg, MRI, TRI);
+    const ValueMapping *ValMapping =
+        &getValueMapping(0, Size.getKnownMinValue(), *CurRegBank);
     if (IsCopyLike) {
       if (!OperandsMapping[0]) {
         if (MI.isRegSequence()) {

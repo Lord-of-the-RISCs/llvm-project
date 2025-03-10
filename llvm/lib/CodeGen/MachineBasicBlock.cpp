@@ -16,11 +16,13 @@
 #include "llvm/CodeGen/LiveIntervals.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/LiveVariables.h"
+#include "llvm/CodeGen/MachineDomTreeUpdater.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineJumpTableInfo.h"
 #include "llvm/CodeGen/MachineLoopInfo.h"
+#include "llvm/CodeGen/MachinePostDominators.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/SlotIndexes.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
@@ -90,15 +92,15 @@ MCSymbol *MachineBasicBlock::getSymbol() const {
   return CachedMCSymbol;
 }
 
-MCSymbol *MachineBasicBlock::getEHCatchretSymbol() const {
-  if (!CachedEHCatchretMCSymbol) {
+MCSymbol *MachineBasicBlock::getEHContSymbol() const {
+  if (!CachedEHContMCSymbol) {
     const MachineFunction *MF = getParent();
     SmallString<128> SymbolName;
     raw_svector_ostream(SymbolName)
         << "$ehgcr_" << MF->getFunctionNumber() << '_' << getNumber();
-    CachedEHCatchretMCSymbol = MF->getContext().getOrCreateSymbol(SymbolName);
+    CachedEHContMCSymbol = MF->getContext().getOrCreateSymbol(SymbolName);
   }
-  return CachedEHCatchretMCSymbol;
+  return CachedEHContMCSymbol;
 }
 
 MCSymbol *MachineBasicBlock::getEndSymbol() const {
@@ -595,7 +597,7 @@ void MachineBasicBlock::printAsOperand(raw_ostream &OS,
   printName(OS, 0);
 }
 
-void MachineBasicBlock::removeLiveIn(MCPhysReg Reg, LaneBitmask LaneMask) {
+void MachineBasicBlock::removeLiveIn(MCRegister Reg, LaneBitmask LaneMask) {
   LiveInVector::iterator I = find_if(
       LiveIns, [Reg](const RegisterMaskPair &LI) { return LI.PhysReg == Reg; });
   if (I == LiveIns.end())
@@ -613,7 +615,7 @@ MachineBasicBlock::removeLiveIn(MachineBasicBlock::livein_iterator I) {
   return LiveIns.erase(LI);
 }
 
-bool MachineBasicBlock::isLiveIn(MCPhysReg Reg, LaneBitmask LaneMask) const {
+bool MachineBasicBlock::isLiveIn(MCRegister Reg, LaneBitmask LaneMask) const {
   livein_iterator I = find_if(
       LiveIns, [Reg](const RegisterMaskPair &LI) { return LI.PhysReg == Reg; });
   return I != livein_end() && (I->LaneMask & LaneMask).any();
@@ -642,7 +644,7 @@ void MachineBasicBlock::sortUniqueLiveIns() {
 Register
 MachineBasicBlock::addLiveIn(MCRegister PhysReg, const TargetRegisterClass *RC) {
   assert(getParent() && "MBB must be inserted in function");
-  assert(Register::isPhysicalRegister(PhysReg) && "Expected physreg");
+  assert(PhysReg.isPhysical() && "Expected physreg");
   assert(RC && "Register class is required");
   assert((isEHPad() || this == &getParent()->front()) &&
          "Only the entry block and landing pads can have physreg live ins");
@@ -1136,8 +1138,30 @@ public:
 };
 
 MachineBasicBlock *MachineBasicBlock::SplitCriticalEdge(
-    MachineBasicBlock *Succ, Pass &P,
-    std::vector<SparseBitVector<>> *LiveInSets) {
+    MachineBasicBlock *Succ, Pass *P, MachineFunctionAnalysisManager *MFAM,
+    std::vector<SparseBitVector<>> *LiveInSets, MachineDomTreeUpdater *MDTU) {
+#define GET_RESULT(RESULT, GETTER, INFIX)                                      \
+  [MF, P, MFAM]() {                                                            \
+    if (P) {                                                                   \
+      auto *Wrapper = P->getAnalysisIfAvailable<RESULT##INFIX##WrapperPass>(); \
+      return Wrapper ? &Wrapper->GETTER() : nullptr;                           \
+    }                                                                          \
+    return MFAM->getCachedResult<RESULT##Analysis>(*MF);                       \
+  }()
+
+  assert((P || MFAM) && "Need a way to get analysis results!");
+  MachineFunction *MF = getParent();
+  LiveIntervals *LIS = GET_RESULT(LiveIntervals, getLIS, );
+  SlotIndexes *Indexes = GET_RESULT(SlotIndexes, getSI, );
+  LiveVariables *LV = GET_RESULT(LiveVariables, getLV, );
+  MachineLoopInfo *MLI = GET_RESULT(MachineLoop, getLI, Info);
+  return SplitCriticalEdge(Succ, {LIS, Indexes, LV, MLI}, LiveInSets, MDTU);
+#undef GET_RESULT
+}
+
+MachineBasicBlock *MachineBasicBlock::SplitCriticalEdge(
+    MachineBasicBlock *Succ, const SplitCriticalEdgeAnalyses &Analyses,
+    std::vector<SparseBitVector<>> *LiveInSets, MachineDomTreeUpdater *MDTU) {
   if (!canSplitCriticalEdge(Succ))
     return nullptr;
 
@@ -1160,22 +1184,16 @@ MachineBasicBlock *MachineBasicBlock::SplitCriticalEdge(
   LLVM_DEBUG(dbgs() << "Splitting critical edge: " << printMBBReference(*this)
                     << " -- " << printMBBReference(*NMBB) << " -- "
                     << printMBBReference(*Succ) << '\n');
-
-  auto *LISWrapper = P.getAnalysisIfAvailable<LiveIntervalsWrapperPass>();
-  LiveIntervals *LIS = LISWrapper ? &LISWrapper->getLIS() : nullptr;
-  auto *SIWrapper = P.getAnalysisIfAvailable<SlotIndexesWrapperPass>();
-  SlotIndexes *Indexes = SIWrapper ? &SIWrapper->getSI() : nullptr;
+  auto *LIS = Analyses.LIS;
   if (LIS)
     LIS->insertMBBInMaps(NMBB);
-  else if (Indexes)
-    Indexes->insertMBBInMaps(NMBB);
+  else if (Analyses.SI)
+    Analyses.SI->insertMBBInMaps(NMBB);
 
   // On some targets like Mips, branches may kill virtual registers. Make sure
   // that LiveVariables is properly updated after updateTerminator replaces the
   // terminators.
-  auto *LVWrapper = P.getAnalysisIfAvailable<LiveVariablesWrapperPass>();
-  LiveVariables *LV = LVWrapper ? &LVWrapper->getLV() : nullptr;
-
+  auto *LV = Analyses.LV;
   // Collect a list of virtual registers killed by the terminators.
   SmallVector<Register, 4> KilledRegs;
   if (LV)
@@ -1214,7 +1232,7 @@ MachineBasicBlock *MachineBasicBlock::SplitCriticalEdge(
   // as the fallthrough successor
   if (Succ == PrevFallthrough)
     PrevFallthrough = NMBB;
-
+  auto *Indexes = Analyses.SI;
   if (!ChangedIndirectJump) {
     SlotIndexUpdateDelegate SlotUpdater(*MF, Indexes);
     updateTerminator(PrevFallthrough);
@@ -1339,12 +1357,10 @@ MachineBasicBlock *MachineBasicBlock::SplitCriticalEdge(
     LIS->repairIntervalsInRange(this, getFirstTerminator(), end(), UsedRegs);
   }
 
-  if (auto *MDTWrapper =
-          P.getAnalysisIfAvailable<MachineDominatorTreeWrapperPass>())
-    MDTWrapper->getDomTree().recordSplitCriticalEdge(this, Succ, NMBB);
+  if (MDTU)
+    MDTU->splitCriticalEdge(this, Succ, NMBB);
 
-  auto *MLIWrapper = P.getAnalysisIfAvailable<MachineLoopInfoWrapperPass>();
-  if (MachineLoopInfo *MLI = MLIWrapper ? &MLIWrapper->getLI() : nullptr)
+  if (MachineLoopInfo *MLI = Analyses.MLI)
     if (MachineLoop *TIL = MLI->getLoopFor(this)) {
       // If one or the other blocks were not in a loop, the new block is not
       // either, and thus LI doesn't need to be updated.
@@ -1484,10 +1500,9 @@ void MachineBasicBlock::ReplaceUsesOfBlockWith(MachineBasicBlock *Old,
 
     // Scan the operands of this machine instruction, replacing any uses of Old
     // with New.
-    for (unsigned i = 0, e = I->getNumOperands(); i != e; ++i)
-      if (I->getOperand(i).isMBB() &&
-          I->getOperand(i).getMBB() == Old)
-        I->getOperand(i).setMBB(New);
+    for (MachineOperand &MO : I->operands())
+      if (MO.isMBB() && MO.getMBB() == Old)
+        MO.setMBB(New);
   }
 
   // Update the successor information.
@@ -1758,7 +1773,7 @@ MachineBasicBlock::liveout_iterator MachineBasicBlock::liveout_begin() const {
       "Liveness information is accurate");
 
   const TargetLowering &TLI = *MF.getSubtarget().getTargetLowering();
-  MCPhysReg ExceptionPointer = 0, ExceptionSelector = 0;
+  MCRegister ExceptionPointer, ExceptionSelector;
   if (MF.getFunction().hasPersonalityFn()) {
     auto PersonalityFn = MF.getFunction().getPersonalityFn();
     ExceptionPointer = TLI.getExceptionPointerRegister(PersonalityFn);

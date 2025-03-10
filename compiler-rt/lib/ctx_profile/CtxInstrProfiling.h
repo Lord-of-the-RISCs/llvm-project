@@ -153,8 +153,8 @@ void __llvm_ctx_profile_release_context(__ctx_profile::ContextRoot *Root);
 /// called for any other function than entry points, in the entry BB of such
 /// function. Same consideration about LSB of returned value as .._start_context
 ContextNode *__llvm_ctx_profile_get_context(void *Callee, GUID Guid,
-                                            uint32_t NrCounters,
-                                            uint32_t NrCallsites);
+                                            uint32_t NumCounters,
+                                            uint32_t NumCallsites);
 
 /// Prepares for collection. Currently this resets counter values but preserves
 /// internal context tree structure.
@@ -169,7 +169,6 @@ void __llvm_ctx_profile_free();
 /// The Writer's first parameter plays the role of closure for Writer, and is
 /// what the caller of __llvm_ctx_profile_fetch passes as the Data parameter.
 /// The second parameter is the root of a context tree.
-bool __llvm_ctx_profile_fetch(void *Data,
-                              bool (*Writer)(void *, const ContextNode &));
+bool __llvm_ctx_profile_fetch(ProfileWriter &);
 }
 #endif // CTX_PROFILE_CTXINSTRPROFILING_H_

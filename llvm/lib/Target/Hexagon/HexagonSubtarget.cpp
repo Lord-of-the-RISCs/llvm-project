@@ -11,7 +11,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "HexagonSubtarget.h"
-#include "Hexagon.h"
 #include "HexagonInstrInfo.h"
 #include "HexagonRegisterInfo.h"
 #include "MCTargetDesc/HexagonMCTargetDesc.h"
@@ -493,7 +492,7 @@ void HexagonSubtarget::adjustSchedDependency(
         break;
       }
     }
-    Dep.setLatency(DLatency ? *DLatency : 0);
+    Dep.setLatency(DLatency.value_or(0));
   }
 
   // Try to schedule uses near definitions to generate .cur.
@@ -687,7 +686,7 @@ bool HexagonSubtarget::isBestZeroLatency(SUnit *Src, SUnit *Dst,
       restoreLatency(Src, DstBest);
   }
 
-  // Attempt to find another opprotunity for zero latency in a different
+  // Attempt to find another opportunity for zero latency in a different
   // dependence.
   if (SrcBest && DstBest)
     // If there is an edge from SrcBest to DstBst, then try to change that

@@ -130,7 +130,7 @@ static cl::opt<bool> RemarksWithHotness(
     cl::desc("With PGO, include profile count in optimization remarks"),
     cl::Hidden);
 
-cl::opt<std::optional<uint64_t>, false, remarks::HotnessThresholdParser>
+static cl::opt<std::optional<uint64_t>, false, remarks::HotnessThresholdParser>
     RemarksHotnessThreshold(
         "pass-remarks-hotness-threshold",
         cl::desc("Minimum profile count required for an "
@@ -346,7 +346,8 @@ static int run(int argc, char **argv) {
 
   ThinBackend Backend;
   if (ThinLTODistributedIndexes)
-    Backend = createWriteIndexesThinBackend(/*OldPrefix=*/"",
+    Backend = createWriteIndexesThinBackend(llvm::hardware_concurrency(Threads),
+                                            /*OldPrefix=*/"",
                                             /*NewPrefix=*/"",
                                             /*NativeObjectPrefix=*/"",
                                             ThinLTOEmitImports,
@@ -447,7 +448,9 @@ static int run(int argc, char **argv) {
 
   auto AddBuffer = [&](size_t Task, const Twine &ModuleName,
                        std::unique_ptr<MemoryBuffer> MB) {
-    *AddStream(Task, ModuleName)->OS << MB->getBuffer();
+    auto Stream = AddStream(Task, ModuleName);
+    *Stream->OS << MB->getBuffer();
+    check(Stream->commit(), "Failed to commit cache");
   };
 
   FileCache Cache;

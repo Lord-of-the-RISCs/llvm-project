@@ -25,12 +25,10 @@
 #include "WebAssemblyMachineFunctionInfo.h"
 #include "WebAssemblySubtarget.h"
 #include "WebAssemblyUtilities.h"
-#include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/CodeGen/LiveIntervals.h"
 #include "llvm/CodeGen/MachineBlockFrequencyInfo.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
-#include "llvm/CodeGen/MachineModuleInfoImpls.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/IR/GlobalAlias.h"
@@ -51,7 +49,7 @@ class WebAssemblyRegStackify final : public MachineFunctionPass {
     AU.setPreservesCFG();
     AU.addRequired<MachineDominatorTreeWrapperPass>();
     AU.addRequired<LiveIntervalsWrapperPass>();
-    AU.addPreserved<MachineBlockFrequencyInfo>();
+    AU.addPreserved<MachineBlockFrequencyInfoWrapperPass>();
     AU.addPreserved<SlotIndexesWrapperPass>();
     AU.addPreserved<LiveIntervalsWrapperPass>();
     AU.addPreservedID(LiveVariablesID);

@@ -1,4 +1,5 @@
 // RUN: %clang_cc1 -std=c++11 %s -verify -triple x86_64-linux-gnu
+// RUN: %clang_cc1 -std=c++11 %s -verify -triple x86_64-linux-gnu -fexperimental-new-constant-interpreter
 
 namespace std {
   typedef decltype(nullptr) nullptr_t;
@@ -8,7 +9,7 @@ template<int *ip> struct IP {  // expected-note 6 {{template parameter is declar
   IP<ip> *ip2;
 };
 
-template<int &ip> struct IR {};
+template<int &ip> struct IR {}; // expected-note {{template parameter is declared here}}
 
 constexpr std::nullptr_t get_nullptr() { return nullptr; }
 

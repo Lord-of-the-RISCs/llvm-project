@@ -9,16 +9,18 @@
 #ifndef LLVM_LIBC_SRC___SUPPORT_FILE_FILE_H
 #define LLVM_LIBC_SRC___SUPPORT_FILE_FILE_H
 
-#include "include/llvm-libc-types/off_t.h"
+#include "hdr/stdio_macros.h"
+#include "hdr/types/off_t.h"
 #include "src/__support/CPP/new.h"
 #include "src/__support/error_or.h"
+#include "src/__support/macros/config.h"
 #include "src/__support/macros/properties/architectures.h"
 #include "src/__support/threads/mutex.h"
 
 #include <stddef.h>
 #include <stdint.h>
 
-namespace LIBC_NAMESPACE {
+namespace LIBC_NAMESPACE_DECL {
 
 struct FileIOResult {
   size_t value;
@@ -181,7 +183,7 @@ public:
     return read_unlocked(data, len);
   }
 
-  ErrorOr<int> seek(long offset, int whence);
+  ErrorOr<int> seek(off_t offset, int whence);
 
   ErrorOr<off_t> tell();
 
@@ -278,6 +280,10 @@ private:
   FileIOResult write_unlocked_fbf(const uint8_t *data, size_t len);
   FileIOResult write_unlocked_nbf(const uint8_t *data, size_t len);
 
+  FileIOResult read_unlocked_fbf(uint8_t *data, size_t len);
+  FileIOResult read_unlocked_nbf(uint8_t *data, size_t len);
+  size_t copy_data_from_buf(uint8_t *data, size_t len);
+
   constexpr void adjust_buf() {
     if (read_allowed() && (buf == nullptr || bufsize == 0)) {
       // We should allow atleast one ungetc operation.
@@ -313,6 +319,6 @@ extern File *stdin;
 extern File *stdout;
 extern File *stderr;
 
-} // namespace LIBC_NAMESPACE
+} // namespace LIBC_NAMESPACE_DECL
 
 #endif // LLVM_LIBC_SRC___SUPPORT_FILE_FILE_H

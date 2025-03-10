@@ -40,7 +40,6 @@
 #include "llvm/CodeGen/MachineMemOperand.h"
 #include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
-#include "llvm/CodeGen/RuntimeLibcalls.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetLowering.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
@@ -69,7 +68,6 @@
 #include "llvm/IR/User.h"
 #include "llvm/IR/Value.h"
 #include "llvm/MC/MCInstrDesc.h"
-#include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -149,8 +147,8 @@ class ARMFastISel final : public FastISel {
     // Backend specific FastISel code.
 
     bool fastSelectInstruction(const Instruction *I) override;
-    unsigned fastMaterializeConstant(const Constant *C) override;
-    unsigned fastMaterializeAlloca(const AllocaInst *AI) override;
+    Register fastMaterializeConstant(const Constant *C) override;
+    Register fastMaterializeAlloca(const AllocaInst *AI) override;
     bool tryToFoldLoadIntoMI(MachineInstr *MI, unsigned OpNo,
                              const LoadInst *LI) override;
     bool fastLowerArguments() override;
@@ -621,11 +619,12 @@ unsigned ARMFastISel::ARMMaterializeGV(const GlobalValue *GV, MVT VT) {
   return DestReg;
 }
 
-unsigned ARMFastISel::fastMaterializeConstant(const Constant *C) {
+Register ARMFastISel::fastMaterializeConstant(const Constant *C) {
   EVT CEVT = TLI.getValueType(DL, C->getType(), true);
 
   // Only handle simple types.
-  if (!CEVT.isSimple()) return 0;
+  if (!CEVT.isSimple())
+    return Register();
   MVT VT = CEVT.getSimpleVT();
 
   if (const ConstantFP *CFP = dyn_cast<ConstantFP>(C))
@@ -635,17 +634,19 @@ unsigned ARMFastISel::fastMaterializeConstant(const Constant *C) {
   else if (isa<ConstantInt>(C))
     return ARMMaterializeInt(C, VT);
 
-  return 0;
+  return Register();
 }
 
 // TODO: unsigned ARMFastISel::TargetMaterializeFloatZero(const ConstantFP *CF);
 
-unsigned ARMFastISel::fastMaterializeAlloca(const AllocaInst *AI) {
+Register ARMFastISel::fastMaterializeAlloca(const AllocaInst *AI) {
   // Don't handle dynamic allocas.
-  if (!FuncInfo.StaticAllocaMap.count(AI)) return 0;
+  if (!FuncInfo.StaticAllocaMap.count(AI))
+    return Register();
 
   MVT VT;
-  if (!isLoadTypeLegal(AI->getType(), VT)) return 0;
+  if (!isLoadTypeLegal(AI->getType(), VT))
+    return Register();
 
   DenseMap<const AllocaInst*, int>::iterator SI =
     FuncInfo.StaticAllocaMap.find(AI);
@@ -665,7 +666,7 @@ unsigned ARMFastISel::fastMaterializeAlloca(const AllocaInst *AI) {
     return ResultReg;
   }
 
-  return 0;
+  return Register();
 }
 
 bool ARMFastISel::isTypeLegal(Type *Ty, MVT &VT) {
@@ -700,7 +701,7 @@ bool ARMFastISel::ARMComputeAddress(const Value *Obj, Address &Addr) {
     // Don't walk into other basic blocks unless the object is an alloca from
     // another block, otherwise it may not have a virtual register assigned.
     if (FuncInfo.StaticAllocaMap.count(static_cast<const AllocaInst *>(Obj)) ||
-        FuncInfo.MBBMap[I->getParent()] == FuncInfo.MBB) {
+        FuncInfo.getMBB(I->getParent()) == FuncInfo.MBB) {
       Opcode = I->getOpcode();
       U = I;
     }
@@ -1223,8 +1224,8 @@ static ARMCC::CondCodes getComparePred(CmpInst::Predicate Pred) {
 
 bool ARMFastISel::SelectBranch(const Instruction *I) {
   const BranchInst *BI = cast<BranchInst>(I);
-  MachineBasicBlock *TBB = FuncInfo.MBBMap[BI->getSuccessor(0)];
-  MachineBasicBlock *FBB = FuncInfo.MBBMap[BI->getSuccessor(1)];
+  MachineBasicBlock *TBB = FuncInfo.getMBB(BI->getSuccessor(0));
+  MachineBasicBlock *FBB = FuncInfo.getMBB(BI->getSuccessor(1));
 
   // Simple branch support.
 
@@ -1329,7 +1330,7 @@ bool ARMFastISel::SelectIndirectBr(const Instruction *I) {
 
   const IndirectBrInst *IB = cast<IndirectBrInst>(I);
   for (const BasicBlock *SuccBB : IB->successors())
-    FuncInfo.MBB->addSuccessor(FuncInfo.MBBMap[SuccBB]);
+    FuncInfo.MBB->addSuccessor(FuncInfo.getMBB(SuccBB));
 
   return true;
 }

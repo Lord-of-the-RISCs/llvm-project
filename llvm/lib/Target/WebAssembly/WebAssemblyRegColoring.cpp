@@ -41,8 +41,8 @@ public:
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.setPreservesCFG();
     AU.addRequired<LiveIntervalsWrapperPass>();
-    AU.addRequired<MachineBlockFrequencyInfo>();
-    AU.addPreserved<MachineBlockFrequencyInfo>();
+    AU.addRequired<MachineBlockFrequencyInfoWrapperPass>();
+    AU.addPreserved<MachineBlockFrequencyInfoWrapperPass>();
     AU.addPreservedID(MachineDominatorsID);
     MachineFunctionPass::getAnalysisUsage(AU);
   }
@@ -135,8 +135,7 @@ static void undefInvalidDbgValues(
 #ifndef NDEBUG
   DenseSet<Register> SeenRegs;
 #endif
-  for (size_t I = 0, E = Assignments.size(); I < E; ++I) {
-    const auto &CoalescedIntervals = Assignments[I];
+  for (const auto &CoalescedIntervals : Assignments) {
     if (CoalescedIntervals.empty())
       continue;
     for (LiveInterval *LI : CoalescedIntervals) {
@@ -234,7 +233,7 @@ bool WebAssemblyRegColoring::runOnMachineFunction(MachineFunction &MF) {
   MachineRegisterInfo *MRI = &MF.getRegInfo();
   LiveIntervals *Liveness = &getAnalysis<LiveIntervalsWrapperPass>().getLIS();
   const MachineBlockFrequencyInfo *MBFI =
-      &getAnalysis<MachineBlockFrequencyInfo>();
+      &getAnalysis<MachineBlockFrequencyInfoWrapperPass>().getMBFI();
   WebAssemblyFunctionInfo &MFI = *MF.getInfo<WebAssemblyFunctionInfo>();
 
   // We don't preserve SSA form.
@@ -312,8 +311,8 @@ bool WebAssemblyRegColoring::runOnMachineFunction(MachineFunction &MF) {
     // If we reassigned the stack pointer, update the debug frame base info.
     if (Old != New && MFI.isFrameBaseVirtual() && MFI.getFrameBaseVreg() == Old)
       MFI.setFrameBaseVreg(New);
-    LLVM_DEBUG(dbgs() << "Assigning vreg" << Register::virtReg2Index(LI->reg())
-                      << " to vreg" << Register::virtReg2Index(New) << "\n");
+    LLVM_DEBUG(dbgs() << "Assigning vreg " << printReg(LI->reg()) << " to vreg "
+                      << printReg(New) << "\n");
   }
   if (!Changed)
     return false;

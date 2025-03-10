@@ -83,6 +83,7 @@ class LLVMConfig(object):
                 "UBSAN_SYMBOLIZER_PATH" "ASAN_OPTIONS",
                 "HWASAN_OPTIONS",
                 "MSAN_OPTIONS",
+                "RTSAN_OPTIONS",
                 "TSAN_OPTIONS",
                 "UBSAN_OPTIONS",
             ]
@@ -168,8 +169,14 @@ class LLVMConfig(object):
                 features.add("target-aarch64")
             elif re.match(r"^arm.*", target_triple):
                 features.add("target-arm")
-            if re.match(r'^ppc64le.*-linux', target_triple):
-                features.add('target=powerpc64le-linux')
+            elif re.match(r"^ppc64le.*-linux", target_triple):
+                features.add("target=powerpc64le-linux")
+            elif re.match(r"^riscv64-.*-elf", target_triple):
+                features.add("target-riscv64")
+            elif re.match(r"^riscv32-.*-elf.", target_triple):
+                features.add("target-riscv32")
+            elif re.match(r"^loongarch64.*", target_triple):
+                features.add("target-loongarch64")
 
         if not user_is_root():
             features.add("non-root-user")
@@ -186,10 +193,7 @@ class LLVMConfig(object):
 
     def _find_git_windows_unix_tools(self, tools_needed):
         assert sys.platform == "win32"
-        if sys.version_info.major >= 3:
-            import winreg
-        else:
-            import _winreg as winreg
+        import winreg
 
         # Search both the 64 and 32-bit hives, as well as HKLM + HKCU
         masks = [0, winreg.KEY_WOW64_64KEY]

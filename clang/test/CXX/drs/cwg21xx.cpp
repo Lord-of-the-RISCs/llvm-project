@@ -1,10 +1,10 @@
-// RUN: %clang_cc1 -std=c++98 -triple x86_64-unknown-unknown %s -verify=expected,cxx98-14,cxx98 -fexceptions -Wno-deprecated-builtins -fcxx-exceptions -pedantic-errors
-// RUN: %clang_cc1 -std=c++11 -triple x86_64-unknown-unknown %s -verify=expected,cxx98-14,since-cxx11 -fexceptions -Wno-deprecated-builtins -fcxx-exceptions -pedantic-errors
-// RUN: %clang_cc1 -std=c++14 -triple x86_64-unknown-unknown %s -verify=expected,cxx98-14,since-cxx11 -fexceptions -Wno-deprecated-builtins -fcxx-exceptions -pedantic-errors
-// RUN: %clang_cc1 -std=c++17 -triple x86_64-unknown-unknown %s -verify=expected,since-cxx11 -fexceptions -Wno-deprecated-builtins -fcxx-exceptions -pedantic-errors
-// RUN: %clang_cc1 -std=c++20 -triple x86_64-unknown-unknown %s -verify=expected,since-cxx11 -fexceptions -Wno-deprecated-builtins -fcxx-exceptions -pedantic-errors
-// RUN: %clang_cc1 -std=c++23 -triple x86_64-unknown-unknown %s -verify=expected,since-cxx11 -fexceptions -Wno-deprecated-builtins -fcxx-exceptions -pedantic-errors
-// RUN: %clang_cc1 -std=c++2c -triple x86_64-unknown-unknown %s -verify=expected,since-cxx11 -fexceptions -Wno-deprecated-builtins -fcxx-exceptions -pedantic-errors
+// RUN: %clang_cc1 -std=c++98 -triple x86_64-unknown-unknown %s -verify=expected,cxx98-14,cxx98 -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: %clang_cc1 -std=c++11 -triple x86_64-unknown-unknown %s -verify=expected,cxx98-14,since-cxx11 -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: %clang_cc1 -std=c++14 -triple x86_64-unknown-unknown %s -verify=expected,cxx98-14,since-cxx11 -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: %clang_cc1 -std=c++17 -triple x86_64-unknown-unknown %s -verify=expected,since-cxx11 -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: %clang_cc1 -std=c++20 -triple x86_64-unknown-unknown %s -verify=expected,since-cxx11 -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: %clang_cc1 -std=c++23 -triple x86_64-unknown-unknown %s -verify=expected,since-cxx11 -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: %clang_cc1 -std=c++2c -triple x86_64-unknown-unknown %s -verify=expected,since-cxx11 -fexceptions -fcxx-exceptions -pedantic-errors
 
 #if __cplusplus == 199711L
 #define static_assert(...) __extension__ _Static_assert(__VA_ARGS__)
@@ -12,11 +12,19 @@
 #endif
 
 namespace std {
-struct type_info;
+  typedef __SIZE_TYPE__ size_t;
+
+  template<typename E> struct initializer_list {
+    const E *p; size_t n;
+    initializer_list(const E *p, size_t n);
+    initializer_list();
+  };
+
+  struct type_info;
 }
 
 namespace cwg2100 { // cwg2100: 12
-  template<const int *P, bool = true> struct X {};
+  template<const int *P, bool = true> struct X {}; // #cwg2100-X
   template<typename T> struct A {
     static const int n = 1;
     int f() {
@@ -27,6 +35,7 @@ namespace cwg2100 { // cwg2100: 12
       return X<&n>::n; // ok, value-dependent
       // cxx98-14-error@-1 {{non-type template argument refers to object 'n' that does not have linkage}}
       //   cxx98-14-note@#cwg2100-n {{non-type template argument refers to object here}}
+      //   cxx98-14-note@#cwg2100-X {{template parameter is declared here}}
     }
   };
   template<const int *P> struct X<P> {
@@ -56,9 +65,9 @@ namespace cwg2100 { // cwg2100: 12
   template<int N> struct Y<N> {
     static const int declared_later = 0;
   };
-}
+} // namespace cwg2100
 
-namespace cwg2103 { // cwg2103: yes
+namespace cwg2103 { // cwg2103: 2.7
   void f() {
     int a;
     int &r = a; // #cwg2103-r
@@ -71,7 +80,7 @@ namespace cwg2103 { // cwg2103: yes
       }
     };
   }
-}
+} // namespace cwg2103
 
 namespace cwg2120 { // cwg2120: 7
   struct A {};
@@ -82,7 +91,7 @@ namespace cwg2120 { // cwg2120: 7
   static_assert(__is_standard_layout(B), "");
   static_assert(__is_standard_layout(D), "");
   static_assert(!__is_standard_layout(E), "");
-}
+} // namespace cwg2120
 
 namespace cwg2126 { // cwg2126: 12
 #if __cplusplus >= 201103L
@@ -134,7 +143,42 @@ namespace cwg2126 { // cwg2126: 12
   //   since-cxx11-note@#cwg21260-j {{temporary created here}}
   static_assert(k.a.n == 1, "");
 #endif
-}
+} // namespace cwg2126
+
+namespace cwg2137 { // cwg2137: 20
+#if __cplusplus >= 201103L
+  struct Q {
+    Q();
+    Q(Q&&);
+    Q(std::initializer_list<Q>) = delete; // #cwg2137-Qcons
+  };
+
+  Q x = Q { Q() };
+  // since-cxx11-error@-1 {{call to deleted constructor of 'Q'}}
+  //   since-cxx11-note@#cwg2137-Qcons {{'Q' has been explicitly marked deleted here}}
+
+  int f(Q); // #cwg2137-f
+  int y = f({ Q() });
+  // since-cxx11-error@-1 {{call to deleted constructor of 'Q'}}
+  //   since-cxx11-note@#cwg2137-Qcons {{'Q' has been explicitly marked deleted here}}
+  //   since-cxx11-note@#cwg2137-f {{passing argument to parameter here}}
+
+  struct U {
+    U();
+    U(const U&);
+  };
+
+  struct Derived : U {
+    Derived();
+    Derived(const Derived&);
+  } d;
+
+  int g(Derived);
+  int g(U(&&)[1]) = delete;
+
+  int z = g({ d });
+#endif
+} // namespace cwg2137
 
 namespace cwg2140 { // cwg2140: 9
 #if __cplusplus >= 201103L
@@ -144,7 +188,7 @@ namespace cwg2140 { // cwg2140: 9
   }
   static_assert(!test({123}), "u.b should be valid even when b is inactive");
 #endif
-}
+} // namespace cwg2140
 
 namespace cwg2141 { // cwg2141: 17
 struct A{};
@@ -177,7 +221,7 @@ void foo() {
   // expected-error@-1 {{'E' cannot be defined in a type specifier}}
 
 }
-}
+} // namespace cwg2141
 
 // cwg2149 is in cwg2149.cpp
 
@@ -189,7 +233,7 @@ namespace cwg2157 { // cwg2157: 11
     // since-cxx11-error@-1 {{ISO C++ only allows ':' in member enumeration declaration to introduce a fixed underlying type, not an anonymous bit-field}}
   };
 #endif
-}
+} // namespace cwg2157
 
 // cwg2165: na
 
@@ -206,7 +250,7 @@ namespace cwg2170 { // cwg2170: 9
     };
   }
 #endif
-}
+} // namespace cwg2170
 
 namespace cwg2171 { // cwg2171: 15
 #if __cplusplus >= 201103L
@@ -216,13 +260,13 @@ struct NonConstCopy {
   NonConstCopy &operator=(NonConstCopy &) = default;
 };
 
-static_assert(__has_trivial_copy(NonConstCopy), "");
+static_assert(__is_trivially_copyable(NonConstCopy), "");
 static_assert(__is_trivially_constructible(NonConstCopy, NonConstCopy &), "");
 static_assert(!__is_trivially_constructible(NonConstCopy, NonConstCopy), "");
 static_assert(!__is_trivially_constructible(NonConstCopy, const NonConstCopy &), "");
 static_assert(!__is_trivially_constructible(NonConstCopy, NonConstCopy &&), "");
 
-static_assert(__has_trivial_assign(NonConstCopy), "");
+static_assert(__is_trivially_assignable(NonConstCopy, NonConstCopy &), "");
 static_assert(__is_trivially_assignable(NonConstCopy &, NonConstCopy &), "");
 static_assert(!__is_trivially_assignable(NonConstCopy &, const NonConstCopy &), "");
 static_assert(!__is_trivially_assignable(NonConstCopy &, NonConstCopy), "");
@@ -244,7 +288,7 @@ static_assert(!noexcept(typeid(*static_cast<D*>(nullptr))), "");
 #endif
 } // namespace cwg2191
 
-namespace cwg2180 { // cwg2180: yes
+namespace cwg2180 { // cwg2180: 3.0
   class A {
     A &operator=(const A &); // #cwg2180-A-copy
     A &operator=(A &&); // #cwg2180-A-move
@@ -272,7 +316,7 @@ namespace cwg2180 { // cwg2180: yes
   //   cxx98-note@#cwg2180-A-move {{implicitly declared private here}}
   // since-cxx11-error@#cwg2180-B-move {{defaulting this move assignment operator would delete it after its first declaration}}
   //   since-cxx11-note@#cwg2180-B {{move assignment operator of 'B' is implicitly deleted because base class 'A' has an inaccessible move assignment operator}}
-}
+} // namespace cwg2180
 
 namespace cwg2199 { // cwg2199: 3.8
                    // NB: reusing part of cwg407 test
@@ -300,4 +344,4 @@ namespace H {
   using namespace A;
   struct S s;
 }
-}
+} // namespace cwg2199

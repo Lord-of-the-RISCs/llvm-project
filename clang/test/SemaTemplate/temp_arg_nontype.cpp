@@ -1,5 +1,5 @@
 // RUN: %clang_cc1 -fsyntax-only -std=c++98 -Wconversion -verify %s
-template<int N> struct A; // expected-note 5{{template parameter is declared here}}
+template<int N> struct A; // expected-note 6{{template parameter is declared here}}
 
 A<0> *a0;
 
@@ -42,7 +42,7 @@ double g(double); // expected-note 2{{candidate function}}
 int h(int);
 float h2(float);
 
-template<int fp(int)> struct A3; // expected-note 1{{template parameter is declared here}}
+template<int fp(int)> struct A3; // expected-note 2{{template parameter is declared here}}
 A3<h> *a14_1;
 A3<&h> *a14_2;
 A3<f> *a14_3;
@@ -61,7 +61,7 @@ A4<*X_volatile_ptr> *a15_2; // expected-error{{non-type template argument does n
 A4<y> *15_3; //  expected-error{{non-type template parameter of reference type 'const X &' cannot bind to template argument of type 'struct Y'}} \
             // FIXME: expected-error{{expected unqualified-id}}
 
-template<int (&fr)(int)> struct A5; // expected-note{{template parameter is declared here}}
+template<int (&fr)(int)> struct A5; // expected-note 2{{template parameter is declared here}}
 A5<h> *a16_1;
 A5<f> *a16_3;
 A5<h2> *a16_6;  // expected-error{{non-type template parameter of reference type 'int (&)(int)' cannot bind to template argument of type 'float (float)'}}
@@ -86,7 +86,7 @@ A6<&Z::baz> *a17_3; // expected-error-re{{non-type template argument of type 'do
 
 
 template<int Z::*pm> struct A7;  // expected-note{{template parameter is declared here}}
-template<int Z::*pm> struct A7c;
+template<int Z::*pm> struct A7c; // expected-note{{template parameter is declared here}}
 A7<&Z::int_member> *a18_1;
 A7c<&Z::int_member> *a18_2;
 A7<&Z::float_member> *a18_3; // expected-error{{non-type template argument of type 'float Z::*' cannot be converted to a value of type 'int Z::*'}}
@@ -128,28 +128,28 @@ namespace ns {
   struct Foo {
     static const bool value = true;
   };
-  
+
   template <bool b>
   struct Bar {};
-  
+
   const bool value = false;
-  
+
   Bar<bool(ns::Foo<int>::value)> x;
 }
 
 // PR5349
 namespace ns {
   enum E { k };
-  
+
   template <E e>
   struct Baz  {};
-  
+
   Baz<k> f1;  // This works.
   Baz<E(0)> f2;  // This too.
   Baz<static_cast<E>(0)> f3;  // And this.
-  
+
   Baz<ns::E(0)> b1;  // This doesn't work.
-  Baz<static_cast<ns::E>(0)> b2;  // This neither.  
+  Baz<static_cast<ns::E>(0)> b2;  // This neither.
 }
 
 // PR5597
@@ -193,7 +193,7 @@ namespace EntityReferenced {
 
   template<typename T>
   struct Y {
-    static void f(T x) { 
+    static void f(T x) {
       x = 1; // expected-error{{incompatible integer to pointer conversion assigning to 'int *' from 'int'}}
     }
   };
@@ -208,7 +208,7 @@ namespace PR6964 {
   // expected-note {{template parameter is declared here}}
   struct as_nview { };
 
-  template <typename Sequence, int I0> 
+  template <typename Sequence, int I0>
   struct as_nview<Sequence, I0>  // expected-note{{while checking a default template argument used here}}
   { };
 }
@@ -235,7 +235,7 @@ namespace test8 {
     char y;
     double z;
   };
-  
+
   template <C* cp> struct B {
     C* p;
     B() : p(cp) {}
@@ -255,6 +255,7 @@ namespace test8 {
 namespace PR8372 {
   template <int I> void foo() { } // expected-note{{template parameter is declared here}}
   void bar() { foo <0x80000000> (); } // expected-warning{{non-type template argument value '2147483648' truncated to '-2147483648' for template parameter of type 'int'}}
+  // expected-note@-1 {{while substituting explicitly-specified template arguments}}
 }
 
 namespace PR9227 {
@@ -387,12 +388,11 @@ namespace PR17696 {
 
 namespace partial_order_different_types {
   template<int, int, typename T, typename, T> struct A;
-  template<int N, typename T, typename U, T V> struct A<0, N, T, U, V>; // expected-note {{matches}}
-  // FIXME: It appears that this partial specialization should be ill-formed as
-  // it is not more specialized than the primary template. V is not deducible
-  // because it does not have the same type as the corresponding parameter.
-  template<int N, typename T, typename U, U V> struct A<0, N, T, U, V> {}; // expected-note {{matches}}
-  A<0, 0, int, int, 0> a; // expected-error {{ambiguous}}
+  // expected-note@-1 {{template is declared here}}
+  template<int N, typename T, typename U, T V> struct A<0, N, T, U, V> {};
+  template<int N, typename T, typename U, U V> struct A<0, N, T, U, V>;
+  // expected-error@-1 {{class template partial specialization is not more specialized than the primary template}}
+  A<0, 0, int, int, 0> a;
 }
 
 namespace partial_order_references {
@@ -436,13 +436,16 @@ namespace dependent_nested_partial_specialization {
 
   template<template<typename> class X> struct A {
     template<typename T, X<T> N> struct B; // expected-note 2{{here}}
-    template<typename T> struct B<T, 0> {}; // expected-error {{non-type template argument specializes a template parameter with dependent type 'Y<T>' (aka 'type-parameter-0-0 *')}}
+    template <typename T> struct B<T, 0> {}; // expected-error {{non-type template argument specializes a template parameter with dependent type 'Y<T>' (aka 'T *')}}
   };
   A<X>::B<int, 0> ax;
   A<Y>::B<int, &n> ay; // expected-error {{undefined}} expected-note {{instantiation of}}
 
   template<template<typename> class X> struct C {
-    template<typename T, int N, int M> struct D; // expected-note {{here}}
+    template<typename T, int N,
+      int M // expected-note {{template parameter is declared here}}
+    > struct D;
+    // expected-note@-1 {{template is declared here}}
     template<typename T, X<T> N> struct D<T*, N, N + 1> {}; // expected-error {{type of specialized non-type template argument depends on}}
   };
   C<X>::D<int*, 0, 1> cx;
@@ -458,17 +461,24 @@ namespace dependent_nested_partial_specialization {
 namespace nondependent_default_arg_ordering {
   int n, m;
   template<typename A, A B = &n> struct X {};
-  template<typename A> void f(X<A>); // expected-note {{candidate}}
-  template<typename A> void f(X<A, &m>); // expected-note {{candidate}}
-  template<typename A, A B> void f(X<A, B>); // expected-note 2{{candidate}}
+
+  template<typename A> void f(X<A>);
+  // expected-note@-1 {{candidate function}}
+  template<typename A> void f(X<A, &m>);
+  // expected-note@-1 {{candidate function}}
+  template<typename A, A B> void f(X<A, B>);
+  // expected-note@-1 2{{candidate function}}
   template<template<typename U, U> class T, typename A, int *B> void f(T<A, B>);
+  // expected-note@-1 2{{candidate function}}
+
+  // FIXME: When partial ordering, we get an inconsistent deduction between
+  // `A` (type-parameter-0-0) and `int *`, when deducing the first parameter.
+  // The deduction mechanism needs to be extended to be able to correctly
+  // handle these cases where the argument's template parameters appear in
+  // the result.
   void g() {
-    // FIXME: The first and second function templates above should be
-    // considered more specialized than the third, but during partial
-    // ordering we fail to check that we actually deduced template arguments
-    // that make the deduced A identical to A.
-    X<int *, &n> x; f(x); // expected-error {{ambiguous}}
-    X<int *, &m> y; f(y); // expected-error {{ambiguous}}
+    X<int *, &n> x; f(x); // expected-error {{call to 'f' is ambiguous}}
+    X<int *, &m> y; f(y); // expected-error {{call to 'f' is ambiguous}}
   }
 }
 
@@ -485,7 +495,12 @@ namespace dependent_backreference {
   Incomplete f(int); // expected-note 2{{here}}
   int f(short);
 
-  template<typename T, T Value, int(*)[sizeof(f(Value))]> struct X {}; // expected-error 2{{incomplete}}
+  template<typename T, T Value,
+    int(*)[ // expected-note 2{{template parameter is declared here}}
+      sizeof(f(Value)) // expected-error 2{{incomplete}}
+    ]
+  > struct X {};
+
   int arr[sizeof(int)];
   // When checking this template-id, we must not treat 'Value' as having type
   // 'int'; its type is the dependent type 'T'.

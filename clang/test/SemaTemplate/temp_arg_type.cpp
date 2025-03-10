@@ -1,9 +1,12 @@
 // RUN: %clang_cc1 -fsyntax-only -verify %s
-// RUN: %clang_cc1 -fsyntax-only -verify -std=c++98 %s
+// RUN: %clang_cc1 -fsyntax-only -verify=expected,cxx98 -std=c++98 %s
 // RUN: %clang_cc1 -fsyntax-only -verify -std=c++11 %s
 // RUN: %clang_cc1 -fsyntax-only -verify -std=c++1z %s
 
-template<typename T> class A; // expected-note 2 {{template parameter is declared here}} expected-note{{template is declared here}}
+template<typename T> class A;
+// expected-note@-1 4{{template parameter is declared here}}
+// cxx98-note@-2    2{{template parameter is declared here}}
+// expected-note@-3  {{template is declared here}}
 
 // [temp.arg.type]p1
 A<0> *a1; // expected-error{{template argument for template type parameter must be a type}}
@@ -69,11 +72,10 @@ namespace deduce_noexcept {
   void noexcept_function() noexcept;
   void throwing_function();
 
-  template<typename T, bool B> float &deduce_function(T(*)() noexcept(B)); // expected-note {{candidate}}
-  template<typename T> int &deduce_function(T(*)() noexcept); // expected-note {{candidate}}
+  template<typename T, bool B> float &deduce_function(T(*)() noexcept(B));
+  template<typename T> int &deduce_function(T(*)() noexcept);
   void test_function_deduction() {
-    // FIXME: This should probably unambiguously select the second overload.
-    int &r = deduce_function(noexcept_function); // expected-error {{ambiguous}}
+    int &r = deduce_function(noexcept_function);
     float &s = deduce_function(throwing_function);
   }
 

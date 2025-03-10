@@ -124,6 +124,13 @@ def fir_AllocaOp : fir_Op<"alloca", [AttrSizedOperandSegments,
     Indeed, a user would likely expect a good Fortran compiler to perform such
     an optimization.
 
+    Stack allocations have a maximum lifetime concept: their uses must not
+    exceed the lifetime of the closest parent operation with the
+    AutomaticAllocationScope trait, IsIsolatedFromAbove trait, or
+    LoopLikeOpInterface trait. This restriction is meant to ease the
+    insertion of stack save and restore operations, and to ease the conversion
+    of stack allocation into heap allocation.
+
     Until Fortran 2018, procedures defaulted to non-recursive. A legal
     implementation could therefore convert stack allocations to global
     allocations. Such a conversion effectively adds the SAVE attribute to all
@@ -183,11 +190,17 @@ def fir_AllocaOp : fir_Op<"alloca", [AttrSizedOperandSegments,
     mlir::Type getAllocatedType();
     bool hasLenParams() { return !getTypeparams().empty(); }
     bool hasShapeOperands() { return !getShape().empty(); }
+    bool isDynamic() {return hasLenParams() || hasShapeOperands();}
     unsigned numLenParams() { return getTypeparams().size(); }
     operand_range getLenParams() { return getTypeparams(); }
     unsigned numShapeOperands() { return getShape().size(); }
     operand_range getShapeOperands() { return getShape(); }
     static mlir::Type getRefTy(mlir::Type ty);
+    /// Is this an operation that owns the alloca directly made in its region?
+    static bool ownsNestedAlloca(mlir::Operation* op);
+    /// Get the parent region that owns this alloca. Nullptr if none can be
+    /// identified.
+    mlir::Region* getOwnerRegion();
   }];
 }
 
@@ -769,7 +782,10 @@ def fir_EmboxOp : fir_Op<"embox", [NoMemoryEffect, AttrSizedOperandSegments]> {
           lower bounds and extents may not be known until runtime),
         - slice: an array section can be described with a slice triple,
         - typeparams: for emboxing a derived type with LEN type parameters,
+        - sourceBox: A box to read information from such as CFI type,
+          type descriptor or element size to populate the new descriptor.
         - accessMap: unused/experimental.
+        - allocator_idx: specify special allocator to use.
   }];
 
   let arguments = (ins
@@ -778,7 +794,8 @@ def fir_EmboxOp : fir_Op<"embox", [NoMemoryEffect, AttrSizedOperandSegments]> {
     Optional<fir_SliceType>:$slice,
     Variadic<AnyIntegerType>:$typeparams,
     Optional<fir_ClassType>:$sourceBox,
-    OptionalAttr<AffineMapAttr>:$accessMap
+    OptionalAttr<AffineMapAttr>:$accessMap,
+    OptionalAttr<I32Attr>:$allocator_idx
   );
 
   let results = (outs BoxOrClassType);
@@ -788,9 +805,11 @@ def fir_EmboxOp : fir_Op<"embox", [NoMemoryEffect, AttrSizedOperandSegments]> {
       "mlir::Value":$memref, CArg<"mlir::Value", "{}">:$shape,
       CArg<"mlir::Value", "{}">:$slice,
       CArg<"mlir::ValueRange", "{}">:$typeparams,
-      CArg<"mlir::Value", "{}">:$sourceBox),
+      CArg<"mlir::Value", "{}">:$sourceBox,
+      CArg<"mlir::IntegerAttr", "{}">:$allocator_idx),
     [{ return build($_builder, $_state, resultTypes, memref, shape, slice,
-                    typeparams, sourceBox, mlir::AffineMapAttr{}); }]>
+                    typeparams, sourceBox, mlir::AffineMapAttr{},
+                    allocator_idx); }]>
   ];
 
   let assemblyFormat = [{
@@ -804,7 +823,7 @@ def fir_EmboxOp : fir_Op<"embox", [NoMemoryEffect, AttrSizedOperandSegments]> {
   let extraClassDeclaration = [{
     bool hasLenParams() { return !getTypeparams().empty(); }
     unsigned numLenParams() { return getTypeparams().size(); }
-    unsigned getSourceBoxOffset() {
+    unsigned getSourceBoxOperandIndex() {
       return 1 + (getShape() ? 1 : 0) + (getSlice() ? 1 : 0)
           + numLenParams();
     }
@@ -1729,10 +1748,16 @@ def fir_CoordinateOp : fir_Op<"coordinate_of", [NoMemoryEffect]> {
     Unlike LLVM's GEP instruction, one cannot stride over the outermost
     reference; therefore, the leading 0 index must be omitted.
 
+    This operation can be used to index derived type fields, in which case
+    the operand is the name of the index field.
+
     ```
       %i = ... : index
       %h = ... : !fir.heap<!fir.array<100 x f32>>
       %p = fir.coordinate_of %h, %i : (!fir.heap<!fir.array<100 x f32>>, index) -> !fir.ref<f32>
+
+      %d = ... : !fir.ref<!fir.type<t{field1:i32, field2:f32}>>
+      %f = fir.coordinate_of %d, field2 : (!fir.ref<!fir.type<t{field1:i32, field2:f32}>>) -> !fir.ref<f32>
     ```
 
     In the example, `%p` will be a pointer to the `%i`-th f32 value in the
@@ -1742,7 +1767,8 @@ def fir_CoordinateOp : fir_Op<"coordinate_of", [NoMemoryEffect]> {
   let arguments = (ins
     AnyRefOrBox:$ref,
     Variadic<AnyCoordinateType>:$coor,
-    TypeAttr:$baseType
+    TypeAttr:$baseType,
+    OptionalAttr<DenseI32ArrayAttr>:$field_indices
   );
 
   let results = (outs RefOrLLVMPtr);
@@ -1752,10 +1778,14 @@ def fir_CoordinateOp : fir_Op<"coordinate_of", [NoMemoryEffect]> {
 
   let builders = [
     OpBuilder<(ins "mlir::Type":$resultType,
-      "mlir::Value":$ref, "mlir::ValueRange":$coor),
-    [{ return build($_builder, $_state, resultType, ref, coor,
-           mlir::TypeAttr::get(ref.getType())); }]>,
+      "mlir::Value":$ref, "mlir::ValueRange":$coor)>,
+    OpBuilder<(ins "mlir::Type":$resultType,
+      "mlir::Value":$ref, "llvm::ArrayRef<fir::IntOrValue>":$coor)>
   ];
+  let extraClassDeclaration = [{
+    constexpr static int32_t kDynamicIndex = std::numeric_limits<int32_t>::min();
+    CoordinateIndicesAdaptor getIndices();
+  }];
 }
 
 def fir_ExtractValueOp : fir_OneResultOp<"extract_value", [NoMemoryEffect]> {
@@ -2413,9 +2443,11 @@ def fir_CallOp : fir_Op<"call",
   let arguments = (ins
     OptionalAttr<SymbolRefAttr>:$callee,
     Variadic<AnyType>:$args,
+    OptionalAttr<DictArrayAttr>:$arg_attrs,
+    OptionalAttr<DictArrayAttr>:$res_attrs,
+    OptionalAttr<fir_FortranProcedureFlagsAttr>:$procedure_attrs,
     DefaultValuedAttr<Arith_FastMathAttr,
-                      "::mlir::arith::FastMathFlags::none">:$fastmath,
-    UnitAttr:$is_bind_c
+                      "::mlir::arith::FastMathFlags::none">:$fastmath
   );
   let results = (outs Variadic<AnyType>);
 
@@ -2469,8 +2501,9 @@ def fir_CallOp : fir_Op<"call",
     void setCalleeFromCallable(mlir::CallInterfaceCallable callee) {
       if (auto calling =
           (*this)->getAttrOfType<mlir::SymbolRefAttr>(getCalleeAttrName()))
-        (*this)->setAttr(getCalleeAttrName(), callee.get<mlir::SymbolRefAttr>());
-      setOperand(0, callee.get<mlir::Value>());
+        (*this)->setAttr(getCalleeAttrName(),
+                         llvm::cast<mlir::SymbolRefAttr>(callee));
+      setOperand(0, llvm::cast<mlir::Value>(callee));
     }
   }];
 }
@@ -2497,7 +2530,10 @@ def fir_DispatchOp : fir_Op<"dispatch", []> {
     StrAttr:$method,
     fir_ClassType:$object,
     Variadic<AnyType>:$args,
-    OptionalAttr<I32Attr>:$pass_arg_pos
+    OptionalAttr<I32Attr>:$pass_arg_pos,
+    OptionalAttr<DictArrayAttr>:$arg_attrs,
+    OptionalAttr<DictArrayAttr>:$res_attrs,
+    OptionalAttr<fir_FortranProcedureFlagsAttr>:$procedure_attrs
   );
 
   let results = (outs Variadic<AnyType>:$results);
@@ -2506,7 +2542,8 @@ def fir_DispatchOp : fir_Op<"dispatch", []> {
 
   let assemblyFormat = [{
     $method `(` $object `:` qualified(type($object)) `)`
-    ( `(` $args^ `:` type($args) `)` )? (`->` type($results)^)? attr-dict
+    ( `(` $args^ `:` type($args) `)` )? (`->` type($results)^)?
+    (`proc_attrs` $procedure_attrs^)? attr-dict
   }];
 
   let extraClassDeclaration = [{
@@ -2590,38 +2627,15 @@ class fir_UnaryArithmeticOp<string mnemonic, list<Trait> traits = []> :
   let assemblyFormat = "operands attr-dict `:` type($result)";
 }
 
-def fir_ConstcOp : fir_Op<"constc", [NoMemoryEffect]> {
-  let summary = "create a complex constant";
-
-  let description = [{
-    A complex constant. Similar to the standard dialect complex type, but this
-    extension allows constants with APFloat values that are not supported in
-    the standard dialect.
-  }];
-
-  let results = (outs fir_ComplexType);
-
-  let hasCustomAssemblyFormat = 1;
-  let hasVerifier = 1;
-
-  let extraClassDeclaration = [{
-    static constexpr llvm::StringRef getRealAttrName() { return "real"; }
-    static constexpr llvm::StringRef getImagAttrName() { return "imaginary"; }
-
-    mlir::Attribute getReal() { return (*this)->getAttr(getRealAttrName()); }
-    mlir::Attribute getImaginary() { return (*this)->getAttr(getImagAttrName()); }
-  }];
-}
-
 class ComplexUnaryArithmeticOp<string mnemonic, list<Trait> traits = []> :
       fir_UnaryArithmeticOp<mnemonic, traits>,
-      Arguments<(ins fir_ComplexType:$operand)>;
+      Arguments<(ins AnyFirComplex:$operand)>;
 
 def fir_NegcOp : ComplexUnaryArithmeticOp<"negc">;
 
 class ComplexArithmeticOp<string mnemonic, list<Trait> traits = []> :
       fir_ArithmeticOp<mnemonic, traits>,
-      Arguments<(ins fir_ComplexType:$lhs, fir_ComplexType:$rhs,
+      Arguments<(ins AnyFirComplex:$lhs, AnyFirComplex:$rhs,
           DefaultValuedAttr<Arith_FastMathAttr,
                             "::mlir::arith::FastMathFlags::none">:$fastmath)>;
 
@@ -2645,8 +2659,8 @@ def fir_CmpcOp : fir_Op<"cmpc",
   }];
 
   let arguments = (ins
-      fir_ComplexType:$lhs,
-      fir_ComplexType:$rhs,
+      AnyFirComplex:$lhs,
+      AnyFirComplex:$rhs,
       DefaultValuedAttr<Arith_FastMathAttr, "::mlir::arith::FastMathFlags::none">:$fastmath);
 
   let results = (outs AnyLogicalLike);
@@ -2694,7 +2708,7 @@ def fir_AddrOfOp : fir_OneResultOp<"address_of", [NoMemoryEffect]> {
   let assemblyFormat = "`(` $symbol `)` attr-dict `:` type($resTy)";
 }
 
-def fir_ConvertOp : fir_OneResultOp<"convert", [NoMemoryEffect]> {
+def fir_ConvertOp : fir_SimpleOneResultOp<"convert", [NoMemoryEffect]> {
   let summary = "encapsulates all Fortran entity type conversions";
 
   let description = [{
@@ -2702,6 +2716,9 @@ def fir_ConvertOp : fir_OneResultOp<"convert", [NoMemoryEffect]> {
     Not all pairs of types have conversions. When types T and U are the same
     type, this instruction is a NOP and may be folded away. This also supports
     integer to pointer conversion and pointer to integer conversion.
+
+    This operation also allows limited interaction between FIR and LLVM
+    dialects by allowing conversion between FIR pointer types and llvm.ptr type.
 
     ```
       %v = ... : i64
@@ -2712,6 +2729,7 @@ def fir_ConvertOp : fir_OneResultOp<"convert", [NoMemoryEffect]> {
   }];
 
   let arguments = (ins AnyType:$value);
+  let results = (outs AnyType:$res);
 
   let assemblyFormat = [{
     $value attr-dict `:` functional-type($value, results)
@@ -2733,8 +2751,9 @@ def fir_ConvertOp : fir_OneResultOp<"convert", [NoMemoryEffect]> {
 }
 
 def FortranTypeAttr : Attr<And<[CPred<"mlir::isa<mlir::TypeAttr>($_self)">,
-    Or<[CPred<"mlir::isa<fir::CharacterType, fir::ComplexType, "
-              "fir::IntegerType, fir::LogicalType, fir::RealType, "
+    Or<[CPred<"mlir::isa<fir::CharacterType, fir::IntegerType, "
+              "fir::UnsignedType, fir::LogicalType, mlir::FloatType, "
+              "mlir::ComplexType, "
               "fir::RecordType>(mlir::cast<mlir::TypeAttr>($_self).getValue())"
     >]>]>, "Fortran surface type"> {
   let storageType = [{ ::mlir::TypeAttr }];
@@ -3076,7 +3095,7 @@ def fir_IsPresentOp : fir_SimpleOp<"is_present", [NoMemoryEffect]> {
 // debug information so we would like to keep this around even if the value
 // is not used.
 def fir_DeclareOp : fir_Op<"declare", [AttrSizedOperandSegments,
-    MemoryEffects<[MemWrite<DebuggingResource>]>,
+    MemoryEffects<[MemAlloc<DebuggingResource>]>,
     DeclareOpInterfaceMethods<fir_FortranVariableOpInterface>]> {
   let summary = "declare a variable";
 

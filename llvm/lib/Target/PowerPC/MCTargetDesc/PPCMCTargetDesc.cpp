@@ -25,11 +25,11 @@
 #include "llvm/MC/MCCodeEmitter.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCDwarf.h"
+#include "llvm/MC/MCELFObjectWriter.h"
 #include "llvm/MC/MCELFStreamer.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInstrAnalysis.h"
 #include "llvm/MC/MCInstrInfo.h"
-#include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSectionXCOFF.h"
 #include "llvm/MC/MCStreamer.h"
@@ -37,9 +37,9 @@
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/MCSymbolELF.h"
 #include "llvm/MC/MCSymbolXCOFF.h"
+#include "llvm/MC/MCXCOFFObjectWriter.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Casting.h"
-#include "llvm/Support/CodeGen.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/raw_ostream.h"
@@ -117,8 +117,8 @@ const char *PPC::stripRegisterPrefix(const char *RegName) {
 /// The operand number argument will be useful when we need to extend this
 /// to instructions that use both Altivec and VSX numbering (for different
 /// operands).
-unsigned PPC::getRegNumForOperand(const MCInstrDesc &Desc, unsigned Reg,
-                                  unsigned OpNo) {
+MCRegister PPC::getRegNumForOperand(const MCInstrDesc &Desc, MCRegister Reg,
+                                    unsigned OpNo) {
   int16_t regClass = Desc.operands()[OpNo].RegClass;
   switch (regClass) {
     // We store F0-F31, VF0-VF31 in MCOperand and it should be F0-F31,
@@ -199,24 +199,6 @@ static MCAsmInfo *createPPCMCAsmInfo(const MCRegisterInfo &MRI,
   return MAI;
 }
 
-static MCStreamer *
-createPPCELFStreamer(const Triple &T, MCContext &Context,
-                     std::unique_ptr<MCAsmBackend> &&MAB,
-                     std::unique_ptr<MCObjectWriter> &&OW,
-                     std::unique_ptr<MCCodeEmitter> &&Emitter) {
-  return createPPCELFStreamer(Context, std::move(MAB), std::move(OW),
-                              std::move(Emitter));
-}
-
-static MCStreamer *
-createPPCXCOFFStreamer(const Triple &T, MCContext &Context,
-                       std::unique_ptr<MCAsmBackend> &&MAB,
-                       std::unique_ptr<MCObjectWriter> &&OW,
-                       std::unique_ptr<MCCodeEmitter> &&Emitter) {
-  return createPPCXCOFFStreamer(Context, std::move(MAB), std::move(OW),
-                                std::move(Emitter));
-}
-
 namespace {
 
 class PPCTargetAsmStreamer : public PPCTargetStreamer {
@@ -246,7 +228,7 @@ public:
           Kind == MCSymbolRefExpr::VariantKind::VK_PPC_AIX_TLSLD ||
           Kind == MCSymbolRefExpr::VariantKind::VK_PPC_AIX_TLSML)
         OS << "\t.tc " << TCSym->getName() << "," << XSym->getName() << "@"
-           << MCSymbolRefExpr::getVariantKindName(Kind) << '\n';
+           << getContext().getAsmInfo()->getVariantKindName(Kind) << '\n';
       else
         OS << "\t.tc " << TCSym->getName() << "," << XSym->getName() << '\n';
 
@@ -259,7 +241,11 @@ public:
   }
 
   void emitMachine(StringRef CPU) override {
-    OS << "\t.machine " << CPU << '\n';
+    const Triple &TT = Streamer.getContext().getTargetTriple();
+    if (TT.isOSBinFormatXCOFF())
+      OS << "\t.machine\t" << '\"' << CPU << '\"' << '\n';
+    else
+      OS << "\t.machine " << CPU << '\n';
   }
 
   void emitAbiVersion(int AbiVersion) override {
@@ -298,15 +284,14 @@ public:
   }
 
   void emitAbiVersion(int AbiVersion) override {
-    MCAssembler &MCA = getStreamer().getAssembler();
-    unsigned Flags = MCA.getELFHeaderEFlags();
+    ELFObjectWriter &W = getStreamer().getWriter();
+    unsigned Flags = W.getELFHeaderEFlags();
     Flags &= ~ELF::EF_PPC64_ABI;
     Flags |= (AbiVersion & ELF::EF_PPC64_ABI);
-    MCA.setELFHeaderEFlags(Flags);
+    W.setELFHeaderEFlags(Flags);
   }
 
   void emitLocalEntry(MCSymbolELF *S, const MCExpr *LocalOffset) override {
-    MCAssembler &MCA = getStreamer().getAssembler();
 
     // encodePPC64LocalEntryOffset will report an error if it cannot
     // encode LocalOffset.
@@ -319,9 +304,10 @@ public:
 
     // For GAS compatibility, unless we already saw a .abiversion directive,
     // set e_flags to indicate ELFv2 ABI.
-    unsigned Flags = MCA.getELFHeaderEFlags();
+    ELFObjectWriter &W = getStreamer().getWriter();
+    unsigned Flags = W.getELFHeaderEFlags();
     if ((Flags & ELF::EF_PPC64_ABI) == 0)
-      MCA.setELFHeaderEFlags(Flags | 2);
+      W.setELFHeaderEFlags(Flags | 2);
   }
 
   void emitAssignment(MCSymbol *S, const MCExpr *Value) override {
@@ -423,7 +409,8 @@ public:
   }
 
   void emitMachine(StringRef CPU) override {
-    llvm_unreachable("Machine pseudo-ops are invalid for XCOFF.");
+    static_cast<XCOFFObjectWriter &>(Streamer.getAssemblerPtr()->getWriter())
+        .setCPU(CPU);
   }
 
   void emitAbiVersion(int AbiVersion) override {
@@ -439,8 +426,7 @@ public:
 
 static MCTargetStreamer *createAsmTargetStreamer(MCStreamer &S,
                                                  formatted_raw_ostream &OS,
-                                                 MCInstPrinter *InstPrint,
-                                                 bool isVerboseAsm) {
+                                                 MCInstPrinter *InstPrint) {
   return new PPCTargetAsmStreamer(S, OS);
 }
 

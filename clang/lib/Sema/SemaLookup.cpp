@@ -21,7 +21,6 @@
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/Basic/Builtins.h"
-#include "clang/Basic/FileManager.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/ModuleLoader.h"
@@ -570,7 +569,7 @@ void LookupResult::resolveKind() {
 
     // For non-type declarations, check for a prior lookup result naming this
     // canonical declaration.
-    if (!D->isPlaceholderVar(getSema().getLangOpts()) && !ExistingI) {
+    if (!ExistingI) {
       auto UniqueResult = Unique.insert(std::make_pair(D, I));
       if (!UniqueResult.second) {
         // We've seen this entity before.
@@ -925,13 +924,12 @@ bool Sema::LookupBuiltin(LookupResult &R) {
     IdentifierInfo *II = R.getLookupName().getAsIdentifierInfo();
     if (II) {
       if (getLangOpts().CPlusPlus && NameKind == Sema::LookupOrdinaryName) {
-        if (II == getASTContext().getMakeIntegerSeqName()) {
-          R.addDecl(getASTContext().getMakeIntegerSeqDecl());
-          return true;
-        } else if (II == getASTContext().getTypePackElementName()) {
-          R.addDecl(getASTContext().getTypePackElementDecl());
-          return true;
-        }
+#define BuiltinTemplate(BIName)                                                \
+  if (II == getASTContext().get##BIName##Name()) {                             \
+    R.addDecl(getASTContext().get##BIName##Decl());                            \
+    return true;                                                               \
+  }
+#include "clang/Basic/BuiltinTemplates.inc"
       }
 
       // Check if this is an OpenCL Builtin, and if so, insert its overloads.
@@ -1195,7 +1193,7 @@ static bool LookupDirect(Sema &S, LookupResult &R, const DeclContext *DC) {
     EPI.ExtInfo = EPI.ExtInfo.withCallingConv(CC_C);
     EPI.ExceptionSpec = EST_None;
     QualType ExpectedType = R.getSema().Context.getFunctionType(
-        R.getLookupName().getCXXNameType(), std::nullopt, EPI);
+        R.getLookupName().getCXXNameType(), {}, EPI);
 
     // Perform template argument deduction against the type that we would
     // expect the function to have.
@@ -1582,9 +1580,13 @@ llvm::DenseSet<Module*> &Sema::getLookupModules() {
   unsigned N = CodeSynthesisContexts.size();
   for (unsigned I = CodeSynthesisContextLookupModules.size();
        I != N; ++I) {
-    Module *M = CodeSynthesisContexts[I].Entity ?
-                getDefiningModule(*this, CodeSynthesisContexts[I].Entity) :
-                nullptr;
+    auto &Ctx = CodeSynthesisContexts[I];
+    // FIXME: Are there any other context kinds that shouldn't be looked at
+    // here?
+    if (Ctx.Kind == CodeSynthesisContext::PartialOrderingTTP ||
+        Ctx.Kind == CodeSynthesisContext::CheckTemplateParameter)
+      continue;
+    Module *M = Ctx.Entity ? getDefiningModule(*this, Ctx.Entity) : nullptr;
     if (M && !LookupModulesCache.insert(M).second)
       M = nullptr;
     CodeSynthesisContextLookupModules.push_back(M);
@@ -1610,7 +1612,7 @@ bool Sema::isUsableModule(const Module *M) {
 
   // Otherwise, the global module fragment from other translation unit is not
   // directly usable.
-  if (M->isGlobalModule())
+  if (M->isExplicitGlobalModule())
     return false;
 
   Module *Current = getCurrentModule();
@@ -1619,6 +1621,13 @@ bool Sema::isUsableModule(const Module *M) {
   // another module easily.
   if (!Current)
     return false;
+
+  // For implicit global module, the decls in the same modules with the parent
+  // module should be visible to the decls in the implicit global module.
+  if (Current->isImplicitGlobalModule())
+    Current = Current->getTopLevelModule();
+  if (M->isImplicitGlobalModule())
+    M = M->getTopLevelModule();
 
   // If M is the module we're parsing or M and the current module unit lives in
   // the same module, M should be usable.
@@ -2325,7 +2334,7 @@ static bool LookupQualifiedNameInUsingDirectives(Sema &S, LookupResult &R,
   // We have already looked into the initial namespace; seed the queue
   // with its using-children.
   for (auto *I : StartDC->using_directives()) {
-    NamespaceDecl *ND = I->getNominatedNamespace()->getOriginalNamespace();
+    NamespaceDecl *ND = I->getNominatedNamespace()->getFirstDecl();
     if (S.isVisible(I) && Visited.insert(ND).second)
       Queue.push_back(ND);
   }
@@ -2903,7 +2912,57 @@ static void CollectEnclosingNamespace(Sema::AssociatedNamespaceSet &Namespaces,
   while (!Ctx->isFileContext() || Ctx->isInlineNamespace())
     Ctx = Ctx->getParent();
 
-  Namespaces.insert(Ctx->getPrimaryContext());
+  // Actually it is fine to always do `Namespaces.insert(Ctx);` simply. But it
+  // may cause more allocations in Namespaces and more unnecessary lookups. So
+  // we'd like to insert the representative namespace only.
+  DeclContext *PrimaryCtx = Ctx->getPrimaryContext();
+  Decl *PrimaryD = cast<Decl>(PrimaryCtx);
+  Decl *D = cast<Decl>(Ctx);
+  ASTContext &AST = D->getASTContext();
+
+  // TODO: Technically it is better to insert one namespace per module. e.g.,
+  //
+  // ```
+  // //--- first.cppm
+  // export module first;
+  // namespace ns { ... } // first namespace
+  //
+  // //--- m-partA.cppm
+  // export module m:partA;
+  // import first;
+  //
+  // namespace ns { ... }
+  // namespace ns { ... }
+  //
+  // //--- m-partB.cppm
+  // export module m:partB;
+  // import first;
+  // import :partA;
+  //
+  // namespace ns { ... }
+  // namespace ns { ... }
+  //
+  // ...
+  //
+  // //--- m-partN.cppm
+  // export module m:partN;
+  // import first;
+  // import :partA;
+  // ...
+  // import :part$(N-1);
+  //
+  // namespace ns { ... }
+  // namespace ns { ... }
+  //
+  // consume(ns::any_decl); // the lookup
+  // ```
+  //
+  // We should only insert once for all namespaces in module m.
+  if (D->isInNamedModule() &&
+      !AST.isInSameModule(D->getOwningModule(), PrimaryD->getOwningModule()))
+    Namespaces.insert(Ctx);
+  else
+    Namespaces.insert(PrimaryCtx);
 }
 
 // Add the associated classes and namespaces for argument-dependent
@@ -3210,6 +3269,9 @@ addAssociatedClassesAndNamespaces(AssociatedLookup &Result, QualType Ty) {
     // Array parameter types are treated as fundamental types.
     case Type::ArrayParameter:
       break;
+
+    case Type::HLSLAttributedResource:
+      T = cast<HLSLAttributedResourceType>(T)->getWrappedType().getTypePtr();
     }
 
     if (Queue.empty())
@@ -3645,7 +3707,8 @@ Sema::LookupLiteralOperator(Scope *S, LookupResult &R,
       TemplateParameterList *Params = FD->getTemplateParameters();
       if (Params->size() == 1) {
         IsTemplate = true;
-        if (!Params->getParam(0)->isTemplateParameterPack() && !StringLit) {
+        NamedDecl *Param = Params->getParam(0);
+        if (!Param->isTemplateParameterPack() && !StringLit) {
           // Implied but not stated: user-defined integer and floating literals
           // only ever use numeric literal operator templates, not templates
           // taking a parameter of class type.
@@ -3657,11 +3720,12 @@ Sema::LookupLiteralOperator(Scope *S, LookupResult &R,
         // is a well-formed template argument for the template parameter.
         if (StringLit) {
           SFINAETrap Trap(*this);
-          SmallVector<TemplateArgument, 1> SugaredChecked, CanonicalChecked;
+          CheckTemplateArgumentInfo CTAI;
+          CheckTemplateParameterRAII CTP(*this, Param);
           TemplateArgumentLoc Arg(TemplateArgument(StringLit), StringLit);
           if (CheckTemplateArgument(
                   Params->getParam(0), Arg, FD, R.getNameLoc(), R.getNameLoc(),
-                  0, SugaredChecked, CanonicalChecked, CTAK_Specified) ||
+                  /*ArgumentPackIndex=*/0, CTAI, CTAK_Specified) ||
               Trap.hasErrorOccurred())
             IsTemplate = false;
         }
@@ -3845,8 +3909,9 @@ void Sema::ArgumentDependentLookup(DeclarationName Name, SourceLocation Loc,
             // exports are only valid in module purview and outside of any
             // PMF (although a PMF should not even be present in a module
             // with an import).
-            assert(FM && FM->isNamedModule() && !FM->isPrivateModule() &&
-                   "bad export context");
+            assert(FM &&
+                   (FM->isNamedModule() || FM->isImplicitGlobalModule()) &&
+                   !FM->isPrivateModule() && "bad export context");
             // .. are attached to a named module M, do not appear in the
             // translation unit containing the point of the lookup..
             if (D->isInAnotherModuleUnit() &&
@@ -4880,7 +4945,6 @@ void TypoCorrectionConsumer::NamespaceSpecifierSet::addNameSpecifier(
       SmallVector<const IdentifierInfo *, 4> NewNameSpecifierIdentifiers;
       getNestedNameSpecifierIdentifiers(NNS, NewNameSpecifierIdentifiers);
       NNS->print(SpecifierOStream, Context.getPrintingPolicy());
-      SpecifierOStream.flush();
       SameNameSpecifier = NewNameSpecifier == CurNameSpecifier;
     }
     if (SameNameSpecifier || llvm::is_contained(CurContextIdentifiers, Name)) {
